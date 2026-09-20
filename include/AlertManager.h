@@ -7,12 +7,13 @@
 #include <ArduinoJson.h>
 
 class AlertManager {
-private:
-    const char* webhookUrl;
-
 public:
     AlertManager(const char* url);
     bool sendAlert(const String& eventType, const String& message, float temp = -999.0f);
+    int sendAlertGetCode(const String& eventType, const String& message, float temp = -999.0f);
+
+private:
+    const char* webhookUrl;
 };
 
 #endif
