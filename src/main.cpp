@@ -17,14 +17,8 @@ unsigned long lastTempAlertTime = 0;
 unsigned long last30MinLogTime = 0;
 unsigned long lastSyncCheckTime = 0;
 
-// Configuration Thresholds
-const float TEMP_ALERT_THRESHOLD = 20.0f;                      // Alert if temp < 20 C
-const unsigned long DOOR_ALERT_TIMEOUT_MS = 15 * 60 * 1000;    // 15 Minutes
-const unsigned long TELEMETRY_INTERVAL_MS = 30 * 60 * 1000;    // 30 Minutes
-const unsigned long TEMP_ALERT_COOLDOWN = 60 * 1000;          // 1 minute alert cooldown
-
 void setup() {
-    Serial.begin(115200);
+    Serial.begin(SERIAL_BAUD_RATE);
     tempSensor.begin();
     doorSensor.begin();
     storageManager.begin();
@@ -33,8 +27,8 @@ void setup() {
     Serial.print("Connecting to Wi-Fi");
     
     unsigned long startAttempt = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 10000) {
-        delay(500);
+    while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < WIFI_CONNECT_TIMEOUT_MS) {
+        delay(WIFI_RETRY_INTERVAL_MS);
         Serial.print(".");
     }
 
@@ -53,7 +47,7 @@ void loop() {
     // =========================================================================
     
     // Check Sensors every 2 seconds
-    if (currentMillis - lastTempCheckTime >= 2000) {
+    if (currentMillis - lastTempCheckTime >= SENSOR_CHECK_INTERVAL_MS) {
         lastTempCheckTime = currentMillis;
         float currentTemp = tempSensor.getTemperatureC();
         bool doorOpen = doorSensor.isOpen();
@@ -61,15 +55,15 @@ void loop() {
         // Print active state to Serial Monitor for viewing
         Serial.printf("[Monitor] Temp: %.2f C | Door: %s\n", currentTemp, doorOpen ? "OPEN" : "CLOSED");
 
-        // --- RULE 1: Temp Alert (< 20 C) ---
-        if (currentTemp != -999.0f && currentTemp < TEMP_ALERT_THRESHOLD) {
-            if (currentMillis - lastTempAlertTime >= TEMP_ALERT_COOLDOWN || lastTempAlertTime == 0) {
+        // --- RULE 1: Temp Alert (> -5 C) ---
+        if (currentTemp != INVALID_TEMPERATURE_C && currentTemp > MAX_TEMP_THRESHOLD_C) {
+            if (currentMillis - lastTempAlertTime >= ALERT_COOLDOWN_MS || lastTempAlertTime == 0) {
                 lastTempAlertTime = currentMillis;
 
                 if (WiFi.status() == WL_CONNECTED) {
-                    String msg = "ALERT: Temp dropped below 20 C! Current: " + String(currentTemp, 1) + " C";
+                    String msg = "ALERT: Temp exceeded threshold! Current: " + String(currentTemp, TEMPERATURE_DECIMAL_PLACES) + " C";
                     Serial.println("[Alert] Wi-Fi UP -> Sending Temp Alert to Webhook...");
-                    alertManager.sendAlert("TEMP_LOW_ALERT", msg, currentTemp);
+                    alertManager.sendAlert("TEMP_HIGH_ALERT", msg, currentTemp);
                 } else {
                     Serial.println("[Alert] Wi-Fi DOWN -> Printing Temp Alert to Serial (Not stored in buffer)");
                 }
@@ -78,7 +72,7 @@ void loop() {
     }
 
     // --- RULE 2: Door Alert (Open > 15 Mins) ---
-    if (doorSensor.isAjarExceeded(DOOR_ALERT_TIMEOUT_MS)) {
+    if (doorSensor.isAjarExceeded(DOOR_OPEN_TIMEOUT_MS)) {
         doorSensor.markAlertTriggered(); // Prevents repeated firing while door stays open
 
         if (WiFi.status() == WL_CONNECTED) {
@@ -105,7 +99,7 @@ void loop() {
 
         if (WiFi.status() == WL_CONNECTED) {
             Serial.println("[Telemetry] Wi-Fi UP -> Sending 30-min log to Webhook...");
-            String msg = "PERIODIC_LOG: Temp=" + String(currentTemp, 2) + "C, Door=" + String(doorStatus ? "OPEN" : "CLOSED");
+            String msg = "PERIODIC_LOG: Temp=" + String(currentTemp, TEMPERATURE_DECIMAL_PLACES) + "C, Door=" + String(doorStatus ? "OPEN" : "CLOSED");
             alertManager.sendAlert("PERIODIC_TELEMETRY", msg, currentTemp);
         } else {
             Serial.println("[Telemetry] Wi-Fi DOWN -> Saving 30-min log to LittleFS internal memory...");
@@ -117,7 +111,7 @@ void loop() {
     // =========================================================================
     // RULE 4: FLUSH INTERNAL STORAGE WHEN WI-FI IS RECONNECTED
     // =========================================================================
-    if (currentMillis - lastSyncCheckTime >= 10000) { // Check every 10 seconds
+    if (currentMillis - lastSyncCheckTime >= STORAGE_SYNC_INTERVAL_MS) {
         lastSyncCheckTime = currentMillis;
 
         if (WiFi.status() == WL_CONNECTED) {
@@ -131,7 +125,7 @@ void loop() {
 
             DataPacket packet;
             if (storageManager.getOldestReading(packet)) {
-                String syncMsg = "STORED_OFFLINE_LOG: Temp=" + String(packet.temperature, 1) + "C";
+                String syncMsg = "STORED_OFFLINE_LOG: Temp=" + String(packet.temperature, TEMPERATURE_DECIMAL_PLACES) + "C";
                 int httpCode = alertManager.sendAlertGetCode("SYNC_TELEMETRY", syncMsg, packet.temperature);
                 
                 if (httpCode >= 200 && httpCode < 300) {

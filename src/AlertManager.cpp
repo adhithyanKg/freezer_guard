@@ -1,4 +1,6 @@
 #include "AlertManager.h"
+#include "Config.h"
+#include "TempSensor.h"
 
 AlertManager::AlertManager(const char* url) : webhookUrl(url) {}
 
@@ -9,7 +11,7 @@ int AlertManager::sendAlertGetCode(const String& eventType, const String& messag
     }
 
     HTTPClient http;
-    http.setTimeout(15000);
+    http.setTimeout(HTTP_TIMEOUT_MS);
     http.begin(webhookUrl);
     http.addHeader("Content-Type", "application/json");
 
@@ -18,7 +20,7 @@ int AlertManager::sendAlertGetCode(const String& eventType, const String& messag
     doc["message"] = message;
 
     // Sanitize float to prevent invalid JSON (NaN / Inf)
-    if (temp != -999.0f && !isnan(temp) && !isinf(temp)) {
+    if (temp != INVALID_TEMPERATURE_C && !isnan(temp) && !isinf(temp)) {
         doc["temperature_c"] = roundf(temp * 100.0f) / 100.0f;
     }
 
