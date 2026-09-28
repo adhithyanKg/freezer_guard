@@ -13,9 +13,19 @@ StorageManager storageManager;
 
 // Timers
 unsigned long lastTempCheckTime = 0;
-unsigned long lastTempAlertTime = 0;
 unsigned long last30MinLogTime = 0;
 unsigned long lastSyncCheckTime = 0;
+unsigned long tempUnsafeStartTime = 0;
+unsigned long lastTempAlertAttemptTime = 0;
+unsigned long lastTempRecoveryAttemptTime = 0;
+bool temperatureIncidentActive = false;
+bool temperatureAlertPending = false;
+bool temperatureRecoveryPending = false;
+float temperatureAlertValue = INVALID_TEMPERATURE_C;
+float temperatureRecoveryValue = INVALID_TEMPERATURE_C;
+unsigned long lastDoorAlertAttemptTime = 0;
+bool doorAlertPending = false;
+float doorAlertTemperature = INVALID_TEMPERATURE_C;
 
 void setup() {
     Serial.begin(SERIAL_BAUD_RATE);
@@ -55,17 +65,63 @@ void loop() {
         // Print active state to Serial Monitor for viewing
         Serial.printf("[Monitor] Temp: %.2f C | Door: %s\n", currentTemp, doorOpen ? "OPEN" : "CLOSED");
 
-        // --- RULE 1: Temp Alert (> -5 C) ---
+        // --- RULE 1: Temperature must remain above the limit before alerting ---
         if (currentTemp != INVALID_TEMPERATURE_C && currentTemp > MAX_TEMP_THRESHOLD_C) {
-            if (currentMillis - lastTempAlertTime >= ALERT_COOLDOWN_MS || lastTempAlertTime == 0) {
-                lastTempAlertTime = currentMillis;
+            if (tempUnsafeStartTime == 0) {
+                tempUnsafeStartTime = currentMillis;
+            }
 
-                if (WiFi.status() == WL_CONNECTED) {
-                    String msg = "ALERT: Temp exceeded threshold! Current: " + String(currentTemp, TEMPERATURE_DECIMAL_PLACES) + " C";
-                    Serial.println("[Alert] Wi-Fi UP -> Sending Temp Alert to Webhook...");
-                    alertManager.sendAlert("TEMP_HIGH_ALERT", msg, currentTemp);
+            if (!temperatureIncidentActive &&
+                currentMillis - tempUnsafeStartTime >= TEMP_ALERT_DELAY_MS) {
+                temperatureIncidentActive = true;
+                temperatureAlertValue = currentTemp;
+                temperatureAlertPending = true;
+                lastTempAlertAttemptTime = 0;
+                Serial.println("[Alert] Temperature incident detected; notification queued.");
+            }
+        } else if (currentTemp != INVALID_TEMPERATURE_C && currentTemp <= TEMP_RECOVERY_THRESHOLD_C) {
+            tempUnsafeStartTime = 0;
+
+            if (temperatureIncidentActive) {
+                temperatureIncidentActive = false;
+                temperatureRecoveryValue = currentTemp;
+                temperatureRecoveryPending = true;
+                lastTempRecoveryAttemptTime = 0;
+                Serial.println("[Alert] Temperature recovered; recovery notification queued.");
+            }
+        } else if (currentTemp != INVALID_TEMPERATURE_C) {
+            // Temperature left the unsafe range but has not reached the recovery threshold.
+            tempUnsafeStartTime = 0;
+        }
+
+        if (WiFi.status() == WL_CONNECTED) {
+            if (temperatureAlertPending &&
+                (lastTempAlertAttemptTime == 0 ||
+                 currentMillis - lastTempAlertAttemptTime >= TEMP_ALERT_RETRY_INTERVAL_MS)) {
+                lastTempAlertAttemptTime = currentMillis;
+                String msg = "ALERT: Temp exceeded threshold! Current: " +
+                             String(temperatureAlertValue, TEMPERATURE_DECIMAL_PLACES) + " C";
+                Serial.println("[Alert] Sending temperature alert to Webhook...");
+                if (alertManager.sendAlert("TEMP_HIGH_ALERT", msg, temperatureAlertValue)) {
+                    temperatureAlertPending = false;
+                    Serial.println("[Alert] Temperature alert delivered.");
                 } else {
-                    Serial.println("[Alert] Wi-Fi DOWN -> Printing Temp Alert to Serial (Not stored in buffer)");
+                    Serial.println("[Alert] Temperature alert delivery failed; will retry.");
+                }
+            }
+
+            if (temperatureRecoveryPending &&
+                (lastTempRecoveryAttemptTime == 0 ||
+                 currentMillis - lastTempRecoveryAttemptTime >= TEMP_ALERT_RETRY_INTERVAL_MS)) {
+                lastTempRecoveryAttemptTime = currentMillis;
+                String msg = "RECOVERY: Temperature returned to safe range. Current: " +
+                             String(temperatureRecoveryValue, TEMPERATURE_DECIMAL_PLACES) + " C";
+                Serial.println("[Alert] Sending temperature recovery to Webhook...");
+                if (alertManager.sendAlert("TEMP_RECOVERY", msg, temperatureRecoveryValue)) {
+                    temperatureRecoveryPending = false;
+                    Serial.println("[Alert] Temperature recovery delivered.");
+                } else {
+                    Serial.println("[Alert] Temperature recovery delivery failed; will retry.");
                 }
             }
         }
@@ -74,14 +130,24 @@ void loop() {
     // --- RULE 2: Door Alert (Open > 15 Mins) ---
     if (doorSensor.isAjarExceeded(DOOR_OPEN_TIMEOUT_MS)) {
         doorSensor.markAlertTriggered(); // Prevents repeated firing while door stays open
+        doorAlertTemperature = tempSensor.getTemperatureC();
+        doorAlertPending = true;
+        lastDoorAlertAttemptTime = 0;
+        Serial.println("[Alert] Door-open incident detected; notification queued.");
+    }
 
-        if (WiFi.status() == WL_CONNECTED) {
-            float currentTemp = tempSensor.getTemperatureC();
-            String msg = "ALERT: Door has been left open for over 15 minutes!";
-            Serial.printf("[Alert] Wi-Fi UP -> Sending Door Alert to Webhook (Temp: %.2f C)...\n", currentTemp);
-            alertManager.sendAlert("DOOR_OPEN_ALERT", msg, currentTemp);
+    if (WiFi.status() == WL_CONNECTED && doorAlertPending &&
+        (lastDoorAlertAttemptTime == 0 ||
+         currentMillis - lastDoorAlertAttemptTime >= TEMP_ALERT_RETRY_INTERVAL_MS)) {
+        lastDoorAlertAttemptTime = currentMillis;
+        String msg = "ALERT: Door has been left open for over 15 minutes! Temp=" +
+                     String(doorAlertTemperature, TEMPERATURE_DECIMAL_PLACES) + " C";
+        Serial.println("[Alert] Sending door alert to Webhook...");
+        if (alertManager.sendAlert("DOOR_OPEN_ALERT", msg, doorAlertTemperature)) {
+            doorAlertPending = false;
+            Serial.println("[Alert] Door alert delivered.");
         } else {
-            Serial.println("[Alert] Wi-Fi DOWN -> Printing Door Alert to Serial (Not stored in buffer)");
+            Serial.println("[Alert] Door alert delivery failed; will retry.");
         }
     }
 
@@ -125,7 +191,8 @@ void loop() {
 
             DataPacket packet;
             if (storageManager.getOldestReading(packet)) {
-                String syncMsg = "STORED_OFFLINE_LOG: Temp=" + String(packet.temperature, TEMPERATURE_DECIMAL_PLACES) + "C";
+                String syncMsg = "STORED_OFFLINE_LOG: Temp=" + String(packet.temperature, TEMPERATURE_DECIMAL_PLACES) +
+                                 "C, Door=" + String(packet.doorOpen ? "OPEN" : "CLOSED");
                 int httpCode = alertManager.sendAlertGetCode("SYNC_TELEMETRY", syncMsg, packet.temperature);
                 
                 if (httpCode >= 200 && httpCode < 300) {

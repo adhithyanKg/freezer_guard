@@ -5,7 +5,6 @@
 #include <DallasTemperature.h>
 
 #define INVALID_TEMPERATURE_C -999.0f
-#define TEMPERATURE_DECIMAL_PLACES 2
 
 class TempSensor {
 private:

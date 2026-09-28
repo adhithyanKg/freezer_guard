@@ -20,8 +20,11 @@
 
 // Operational Limits
 #define MAX_TEMP_THRESHOLD_C -5.0   // Alert if freezer goes above -5°C
+#define TEMP_ALERT_DELAY_MS (5UL * 60UL * 1000UL) // Temperature must remain unsafe for 5 minutes
+#define TEMP_RECOVERY_THRESHOLD_C -6.0 // Temperature must reach this value to clear the alert
+#define TEMP_ALERT_RETRY_INTERVAL_MS 10000UL // Retry pending temperature alerts every 10 seconds
 #define DOOR_OPEN_TIMEOUT_MS (15UL * 60UL * 1000UL)  // 15 minutes
-#define ALERT_COOLDOWN_MS    300000 // 5-minute cooldown between repeated alerts
 #define TELEMETRY_INTERVAL_MS (30UL * 60UL * 1000UL)   // 30 Minutes
+#define TEMPERATURE_DECIMAL_PLACES 2
 
 #endif
